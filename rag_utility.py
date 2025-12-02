@@ -1,25 +1,29 @@
 import os
 from dotenv import load_dotenv
 
-from langchain_community.document_loaders import UnstructuredPDFLoader
+# SAFE PDF loader for Streamlit Cloud (no libGL)
+from langchain_community.document_loaders import PyPDFLoader
+
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 
-# NEW imports for LangChain 1.1+
+# LangChain Core (LCEL)
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
+# Working directory
 working_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Embeddings
 embedding = HuggingFaceEmbeddings()
 
-# Load the Llama-3.3-70B model from Groq
+# Groq LLM
 llm = ChatGroq(
     model="llama-3.3-70b-versatile",
     temperature=0
@@ -28,9 +32,11 @@ llm = ChatGroq(
 
 def process_document_to_chroma_db(file_name):
 
-    loader = UnstructuredPDFLoader(f"{working_dir}/{file_name}")
+    # Use PyPDFLoader (safe, pure Python)
+    loader = PyPDFLoader(f"{working_dir}/{file_name}")
     docs = loader.load()
 
+    # Splitter
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=2000,
         chunk_overlap=200
@@ -38,6 +44,7 @@ def process_document_to_chroma_db(file_name):
 
     chunks = splitter.split_documents(docs)
 
+    # Save vectors to Chroma DB
     Chroma.from_documents(
         chunks,
         embedding,
@@ -48,18 +55,19 @@ def process_document_to_chroma_db(file_name):
 
 
 def answer_question(user_question):
-    # Load the persistent Chroma vector database
+
+    # Load existing vector DB
     vectorstore = Chroma(
         persist_directory=f"{working_dir}/doc_vectorstore",
         embedding_function=embedding
     )
-    # Create a retriever for document search
+
     retriever = vectorstore.as_retriever()
 
-    # We do retrieval using LCEL (LangChain Expression Language)
+    # Prompt template
     prompt = ChatPromptTemplate.from_template("""
 You are a helpful assistant. Use ONLY the context to answer the question.
-If the answer is not found in the context, say:
+If answer is not in the document, reply:
 "I could not find that information in the document."
 
 Context:
@@ -68,21 +76,15 @@ Context:
 Question: {question}
 """)
 
-    # LCEL pipeline (official new API)
+    # LCEL chain
     chain = (
         {
             "context": retriever,
-            "question": RunnablePassthrough()
+            "question": RunnablePassthrough(),
         }
         | prompt
         | llm
         | StrOutputParser()
     )
-#  # Create a RetrievalQA chain to answer user questions using Llama-3.3-70B
-#     qa_chain = RetrievalQA.from_chain_type(
-#         llm=llm,
-#         chain_type="stuff",
-#         retriever=retriever,
-#     )
-    answer = chain.invoke(user_question)
-    return answer
+
+    return chain.invoke(user_question)
